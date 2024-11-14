@@ -1,94 +1,66 @@
 // src/app/api/historical-data/[index]/route.js
 import axios from 'axios';
-import sp500Data from '@/data/sp500-historical.json';
-import nasdaqData from '@/data/nasdaq-historical.json';
-import growthData from '@/data/growth-historical.json';
-import valueData from '@/data/value-historical.json';
 
 const INDEX_SYMBOLS = {
-  sp500: '%5EGSPC',
-  nasdaq: '%5EIXIC',
-  growth: 'IWF',
-  value: 'IWD'
-};
-
-const STATIC_DATA = {
-  sp500: sp500Data,
-  nasdaq: nasdaqData,
-  growth: growthData,
-  value: valueData
+  sp500: '%5EGSPC',    // S&P 500
+  nasdaq: '%5EIXIC',   // NASDAQ
+  growth: 'IWF',       // Russell Growth ETF as proxy
+  value: 'IWD'         // Russell Value ETF as proxy
 };
 
 export async function GET(req, { params }) {
-  const { index } = params;
-  const symbol = INDEX_SYMBOLS[index];
-
-  if (!symbol) {
-    return new Response(
-      JSON.stringify({ error: 'Invalid index specified.' }),
-      { 
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-  }
-
   try {
-    // First, return static data immediately
-    const staticData = STATIC_DATA[index];
-    
-    // Then fetch latest data in the background
-    const API_KEY = process.env.FMP_API_KEY;
-    if (!API_KEY) {
+    const { index } = params;
+    const symbol = INDEX_SYMBOLS[index];
+
+    if (!symbol) {
       return new Response(
-        JSON.stringify({ data: staticData.data }),
+        JSON.stringify({ error: 'Invalid index specified.' }),
         { 
-          status: 200,
+          status: 400,
           headers: { 'Content-Type': 'application/json' }
         }
       );
     }
 
-    // Only fetch data from the last known date in static data
-    const lastKnownDate = staticData.data[staticData.data.length - 1].date;
-    
+    const API_KEY = process.env.FMP_API_KEY;
+    if (!API_KEY) {
+      console.error('API key is not set.');
+      return new Response(
+        JSON.stringify({ error: 'API key is not set.' }),
+        { 
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    }
+
     const response = await axios.get(
       `https://financialmodelingprep.com/api/v3/historical-price-full/${symbol}`,
       {
         params: {
           apikey: API_KEY,
-          from: lastKnownDate,
           serietype: 'line',
+          timeseries: 6000,
         },
       }
     );
 
     if (!response.data.historical) {
-      return new Response(
-        JSON.stringify({ data: staticData.data }),
-        { 
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
+      throw new Error('No historical data received');
     }
 
-    // Process new data
-    const newData = response.data.historical
+    const processedData = response.data.historical
       .map(point => ({
         date: point.date,
         value: point.close,
       }))
       .reverse();
 
-    // Combine static and new data
-    const combinedData = [
-      ...staticData.data.filter(d => d.date < lastKnownDate),
-      ...newData
-    ];
+    console.log(`Fetched ${processedData.length} data points for ${index}`);
 
     return new Response(
-      JSON.stringify({ data: combinedData }),
+      JSON.stringify({ data: processedData }),
       { 
         status: 200,
         headers: {
@@ -98,12 +70,18 @@ export async function GET(req, { params }) {
       }
     );
   } catch (error) {
-    // If API call fails, return static data
     console.error(`Error fetching ${params.index} historical data:`, error);
+    
+    const errorMessage = error.response?.data?.error || 'Failed to fetch historical data.';
+    const statusCode = error.response?.status || 500;
+    
     return new Response(
-      JSON.stringify({ data: STATIC_DATA[index].data }),
+      JSON.stringify({ 
+        error: errorMessage,
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      }),
       { 
-        status: 200,
+        status: statusCode,
         headers: { 'Content-Type': 'application/json' }
       }
     );
